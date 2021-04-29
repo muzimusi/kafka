@@ -21,11 +21,11 @@ import scala.collection.Seq
 
 sealed abstract class ControllerState {
 
-  def value: Byte
+  def value: Byte // 每类ControllerState都定义一个value值，表示Controller状态的序号, 表示Controller状态的序号，从0开始。
 
   def rateAndTimeMetricName: Option[String] =
-    if (hasRateAndTimeMetric) Some(s"${toString}RateAndTimeMs") else None
-
+    if (hasRateAndTimeMetric) Some(s"${toString}RateAndTimeMs") else None // rateAndTimeMetricName用于构造Controller状态速率的监控指标名称。
+                                                                          // 比如，TopicChange是一类ControllerState，用于表示主题总数发生了变化。为了监控这类状态变更速率，代码中的rateAndTimeMetricName方法会定义一个名为TopicChangeRateAndTimeMs的指标。当然，并非所有的ControllerState都有对应的速率监控指标，比如，表示空闲状态的Idle就没有对应的指标。
   protected def hasRateAndTimeMetric: Boolean = true
 }
 

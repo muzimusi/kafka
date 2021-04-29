@@ -71,28 +71,29 @@ case class ReplicaAssignment private (replicas: Seq[Int],
     s"addingReplicas=${addingReplicas.mkString(",")}, " +
     s"removingReplicas=${removingReplicas.mkString(",")})"
 }
-
-class ControllerContext {
-  val stats = new ControllerStats
-  var offlinePartitionCount = 0
+// ZooKeeper是整个Kafka集群元数据的“真理之源（Source of Truth）”, 那么Controller可以说是集群元数据的“真理之源副本（Backup Source of Truth）”。Controller承载了ZooKeeper上的所有元数据
+class ControllerContext { // 事实上，集群Broker是不会与ZooKeeper直接交互去获取元数据的。相反地，它们总是与Controller进行通信，获取和更新最新的集群数据。而且社区已经打算把ZooKeeper“干掉”了，以后Controller将成为新的“真理之源”。
+  val stats = new ControllerStats // Controller统计信息类
+  var offlinePartitionCount = 0  // 离线分区计数器, 统计集群中所有离线或处于不可用状态的主题分区数量
   var preferredReplicaImbalanceCount = 0
-  val shuttingDownBrokerIds = mutable.Set.empty[Int]
-  private val liveBrokers = mutable.Set.empty[Broker]
-  private val liveBrokerEpochs = mutable.Map.empty[Int, Long]
-  var epoch: Int = KafkaController.InitialControllerEpoch
-  var epochZkVersion: Int = KafkaController.InitialControllerEpochZkVersion
+  val shuttingDownBrokerIds = mutable.Set.empty[Int] // 所有正在关闭中的Broker ID列表; 当Controller在管理集群Broker时，它要依靠这个字段来甄别Broker当前是否已关闭，因为处于关闭状态的Broker是不适合执行某些操作的，如分区重分配（Reassignment）以及主题删除等。另外，Kafka必须要为这些关闭中的Broker执行很多清扫工作，Controller定义了一个onBrokerFailure方法，它就是用来做这个的
+  private val liveBrokers = mutable.Set.empty[Broker] // 当前运行中Broker对象列表; 每个Broker对象就是一个的三元组。ControllerContext中定义了很多方法来管理该字段，如addLiveBrokersAndEpochs、removeLiveBrokers和updateBrokerMetadata等
+  private val liveBrokerEpochs = mutable.Map.empty[Int, Long] // 所有运行中Broker的Epoch信息。Kafka使用Epoch数据防止Zombie Broker，即一个非常老的Broker被选举成为Controller; 源码大多使用这个字段来获取所有运行中Broker的ID序号:def liveBrokerIds: Set[Int] = liveBrokerEpochs.keySet -- shuttingDownBrokerIds 或者 def liveBrokerIds: Set[Int] = liveBrokerEpochs.keySet.diff(shuttingDownBrokerIds); liveBrokerEpochs的keySet方法返回Broker序号列表，然后从中移除关闭中的Broker序号，剩下的自然就是处于运行中的Broker序号列表了
+  // epoch实际上就是ZooKeeper中/controller_epoch节点的值,可以认为它就是Controller在整个Kafka集群的版本号，而epochZkVersion实际上是/controller_epoch节点的dataVersion值; Kafka使用epochZkVersion来判断和防止Zombie Controller。这也就是说，原先在老Controller任期内的Controller操作在新Controller不能成功执行，因为新Controller的epochZkVersion要比老Controller的大。“这里的两个Epoch和上面的liveBrokerEpochs有啥区别呢？”实际上，这里的两个Epoch值都是属于Controller侧的数据，而liveBrokerEpochs是每个Broker自己的Epoch值。
+  var epoch: Int = KafkaController.InitialControllerEpoch // Controller当前Epoch值
+  var epochZkVersion: Int = KafkaController.InitialControllerEpochZkVersion // Controller对应ZooKeeper节点的Epoch值
 
-  val allTopics = mutable.Set.empty[String]
+  val allTopics = mutable.Set.empty[String] // 集群主题列表, 每当有主题的增减，Controller就要更新该字段的值。Controller有个processTopicChange方法
   var topicIds = mutable.Map.empty[String, Uuid]
   var topicNames = mutable.Map.empty[Uuid, String]
-  val partitionAssignments = mutable.Map.empty[String, mutable.Map[Int, ReplicaAssignment]]
-  private val partitionLeadershipInfo = mutable.Map.empty[TopicPartition, LeaderIsrAndControllerEpoch]
-  val partitionsBeingReassigned = mutable.Set.empty[TopicPartition]
-  val partitionStates = mutable.Map.empty[TopicPartition, PartitionState]
-  val replicaStates = mutable.Map.empty[PartitionAndReplica, ReplicaState]
-  val replicasOnOfflineDirs = mutable.Map.empty[Int, Set[TopicPartition]]
+  val partitionAssignments = mutable.Map.empty[String, mutable.Map[Int, ReplicaAssignment]] // 所有主题分区的副本分配情况。这是Controller最重要的元数据了（可以从这个字段衍生、定义很多实用的方法，来帮助Kafka从各种维度获取数据，如获取某个Broker上的所有分区：partitionsOnBroker；获取某个主题的所有分区对象：partitionsForTopic）
+  private val partitionLeadershipInfo = mutable.Map.empty[TopicPartition, LeaderIsrAndControllerEpoch] // 主题分区的Leader/ISR副本信息
+  val partitionsBeingReassigned = mutable.Set.empty[TopicPartition] // 正处于副本重分配过程的主题分区列表
+  val partitionStates = mutable.Map.empty[TopicPartition, PartitionState] // 主题分区状态列表
+  val replicaStates = mutable.Map.empty[PartitionAndReplica, ReplicaState]  // 主题分区的副本状态列表
+  val replicasOnOfflineDirs = mutable.Map.empty[Int, Set[TopicPartition]] // 不可用磁盘路径上的副本列表
 
-  val topicsToBeDeleted = mutable.Set.empty[String]
+  val topicsToBeDeleted = mutable.Set.empty[String] // 待删除主题列表
 
   /** The following topicsWithDeletionStarted variable is used to properly update the offlinePartitionCount metric.
    * When a topic is going through deletion, we don't want to keep track of its partition state
@@ -113,8 +114,8 @@ class ControllerContext {
    * NonExistentPartition state. Once a topic is in the topicsWithDeletionStarted set, we will stop monitoring
    * its partition state changes in the offlinePartitionCount metric
    */
-  val topicsWithDeletionStarted = mutable.Set.empty[String]
-  val topicsIneligibleForDeletion = mutable.Set.empty[String]
+  val topicsWithDeletionStarted = mutable.Set.empty[String] // 已开启删除的主题列表
+  val topicsIneligibleForDeletion = mutable.Set.empty[String] // 暂时无法执行删除的主题列表
 
   private def clearTopicsState(): Unit = {
     allTopics.clear()
@@ -211,7 +212,7 @@ class ControllerContext {
   def updateBrokerMetadata(oldMetadata: Broker, newMetadata: Broker): Unit = {
     liveBrokers -= oldMetadata
     liveBrokers += newMetadata
-  }
+  } // 每当新增或移除已有Broker时，ZooKeeper就会更新其保存的Broker数据，从而引发Controller修改元数据，也就是会调用updateBrokerMetadata方法来增减Broker列表中的对象。
 
   // getter
   def liveBrokerIds: Set[Int] = liveBrokerEpochs.keySet.diff(shuttingDownBrokerIds)
@@ -228,7 +229,7 @@ class ControllerContext {
         case (partition, _) => new TopicPartition(topic, partition)
       }
     }.toSet
-  }
+  } // 获取某个Broker上的所有分区对象
 
   def isReplicaOnline(brokerId: Int, topicPartition: TopicPartition, includeShuttingDownBrokers: Boolean = false): Boolean = {
     val brokerOnline = {
@@ -261,7 +262,7 @@ class ControllerContext {
     partitionAssignments.getOrElse(topic, mutable.Map.empty).map {
       case (partition, _) => new TopicPartition(topic, partition)
     }.toSet
-  }
+  } // 获取某个主题的所有分区对象
 
   /**
     * Get all online and offline replicas.
@@ -388,18 +389,18 @@ class ControllerContext {
     val currentState = partitionStates.put(partition, targetState).getOrElse(NonExistentPartition)
     updatePartitionStateMetrics(partition, currentState, targetState)
   }
-
+  // 更新offlinePartitionCount元数据, 根据给定主题分区的当前状态和目标状态
   private def updatePartitionStateMetrics(partition: TopicPartition,
                                           currentState: PartitionState,
                                           targetState: PartitionState): Unit = {
-    if (!isTopicDeletionInProgress(partition.topic)) {
-      if (currentState != OfflinePartition && targetState == OfflinePartition) {
+    if (!isTopicDeletionInProgress(partition.topic)) { // 如果该主题当前并未处于删除中状态
+      if (currentState != OfflinePartition && targetState == OfflinePartition) { // 这个if语句判断是否要将该主题分区状态转换到离线状态; targetState表示该分区要变更到的状态, 如果当前状态不是OfflinePartition，即离线状态并且目标状态是离线状态
         offlinePartitionCount = offlinePartitionCount + 1
-      } else if (currentState == OfflinePartition && targetState != OfflinePartition) {
+      } else if (currentState == OfflinePartition && targetState != OfflinePartition) { // 这个else if语句判断是否要将该主题分区状态转换到非离线状态; 如果当前状态已经是离线状态，但targetState不是
         offlinePartitionCount = offlinePartitionCount - 1
       }
     }
-  }
+  } // 该方法首先要判断，此分区所属的主题当前是否处于删除操作的过程中。如果是的话，Kafka就不能修改这个分区的状态，那么代码什么都不做，直接返回。否则，代码会判断该分区是否要转换到离线状态。如果targetState是OfflinePartition，那么就将offlinePartitionCount值加1，毕竟多了一个离线状态的分区。相反地，如果currentState是offlinePartition，而targetState反而不是，那么就将offlinePartitionCount值减1。
 
   def putPartitionStateIfNotExists(partition: TopicPartition, state: PartitionState): Unit = {
     if (partitionStates.getOrElseUpdate(partition, state) == state)

@@ -30,7 +30,7 @@ import org.apache.kafka.common.errors.ControllerMovedException
 import org.apache.zookeeper.KeeperException
 import org.apache.zookeeper.KeeperException.Code
 import scala.collection.{Map, Seq, mutable}
-
+// 分区状态管理机，管理分区的各种状态
 abstract class PartitionStateMachine(controllerContext: ControllerContext) extends Logging {
   /**
    * Invoked on successful controller election.
@@ -538,34 +538,34 @@ object PartitionLeaderElectionAlgorithms {
     assignment.find(id => liveReplicas.contains(id) && isr.contains(id) && !shuttingDownBrokers.contains(id))
   }
 }
-
+// 分区leader选举策略
 sealed trait PartitionLeaderElectionStrategy
 final case class OfflinePartitionLeaderElectionStrategy(allowUnclean: Boolean) extends PartitionLeaderElectionStrategy
 final case object ReassignPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
 final case object PreferredReplicaPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
 final case object ControlledShutdownPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
 
-sealed trait PartitionState {
+sealed trait PartitionState { // 分区状态
   def state: Byte
   def validPreviousStates: Set[PartitionState]
 }
 
-case object NewPartition extends PartitionState {
+case object NewPartition extends PartitionState { // 分区处于新建状态
   val state: Byte = 0
   val validPreviousStates: Set[PartitionState] = Set(NonExistentPartition)
 }
 
-case object OnlinePartition extends PartitionState {
+case object OnlinePartition extends PartitionState { // 分区上线状态
   val state: Byte = 1
   val validPreviousStates: Set[PartitionState] = Set(NewPartition, OnlinePartition, OfflinePartition)
 }
 
-case object OfflinePartition extends PartitionState {
+case object OfflinePartition extends PartitionState { // 分区下线状态
   val state: Byte = 2
   val validPreviousStates: Set[PartitionState] = Set(NewPartition, OnlinePartition, OfflinePartition)
 }
 
-case object NonExistentPartition extends PartitionState {
+case object NonExistentPartition extends PartitionState { // 分区不存在状态
   val state: Byte = 3
   val validPreviousStates: Set[PartitionState] = Set(OfflinePartition)
 }

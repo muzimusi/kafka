@@ -282,7 +282,7 @@ class KafkaServer(
         // Note that we allow the use of KIP-500 controller APIs when forwarding is enabled
         // so that the Envelope request is exposed. This is only used in testing currently.
         socketServer = new SocketServer(config, metrics, time, credentialProvider, apiVersionManager)
-        socketServer.startup(startProcessingRequests = false)
+        socketServer.startup(startProcessingRequests = false) // 创建并启动socketServer；【broker端请求处理全流程】
 
         /* start replica manager */
         alterIsrManager = if (config.interBrokerProtocolVersion.isAlterIsrSupported) {
@@ -316,7 +316,7 @@ class KafkaServer(
 
         /* start kafka controller */
         kafkaController = new KafkaController(config, zkClient, time, metrics, brokerInfo, brokerEpoch, tokenManager, brokerFeatures, featureCache, threadNamePrefix)
-        kafkaController.startup()
+        kafkaController.startup() // 创建并启动controller 【controller与broker通信，元数据维护，发送指令】; 所有的broker启动时候都会创建controller
 
         adminManager = new ZkAdminManager(config, metrics, metadataCache, zkClient)
 

@@ -40,7 +40,7 @@ import java.util.List;
 import java.util.Map;
 
 import static java.util.Collections.singletonList;
-
+// 该请求会更新Broker上的元数据缓存。集群上的所有元数据变更，都首先发生在Controller端，然后再经由这个请求广播给集群上的所有Broker。
 public class UpdateMetadataRequest extends AbstractControlRequest {
 
     public static class Builder extends AbstractControlRequest.Builder<UpdateMetadataRequest> {
