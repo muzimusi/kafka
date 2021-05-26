@@ -511,20 +511,20 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         s"from $currState to $targetState", t)
   }
 }
-
+// 4个方法，分别负责为每种场景选举Leader副本
 object PartitionLeaderElectionAlgorithms {
   def offlinePartitionLeaderElection(assignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int], uncleanLeaderElectionEnabled: Boolean, controllerContext: ControllerContext): Option[Int] = {
-    assignment.find(id => liveReplicas.contains(id) && isr.contains(id)).orElse {
-      if (uncleanLeaderElectionEnabled) {
-        val leaderOpt = assignment.find(liveReplicas.contains)
+    assignment.find(id => liveReplicas.contains(id) && isr.contains(id)).orElse { // 从当前分区副本列表中寻找首个处于存活状态的ISR副本
+      if (uncleanLeaderElectionEnabled) { // 如果找不到满足条件的副本，查看是否允许Unclean Leader选举, 即Broker端参数unclean.leader.election.enable是否等于true
+        val leaderOpt = assignment.find(liveReplicas.contains) // 选择当前副本列表中的第一个存活副本作为Leader
         if (leaderOpt.isDefined)
           controllerContext.stats.uncleanLeaderElectionRate.mark()
         leaderOpt
       } else {
-        None
-      }
-    }
-  }
+        None // 如果不允许Unclean Leader选举，则返回None表示无法选举Leader
+      } // 首先会顺序搜索AR列表，并把第一个同时满足以下两个条件的副本作为新的Leader返回：1该副本是存活状态，即副本所在的Broker依然在运行中；2该副本在ISR列表中; 倘若无法找到这样的副本，代码会检查是否开启了Unclean Leader选举：如果开启了，则降低标准，只要满足上面第一个条件即可；如果未开启，则本次Leader选举失败，没有新Leader被选出。
+    } // AR是有顺序的，而且不一定和ISR的顺序相同！liveReplicas保存了该分区下所有处于存活状态的副本。怎么判断副本是否存活呢？可以根据Controller元数据缓存中的数据来判定。简单来说，所有在运行中的Broker上的副本，都被认为是存活的。
+  }   // 在默认配置下，只要不是由AdminClient发起的Leader选举，这个参数的值一般是false，即Kafka不允许执行Unclean Leader选举。所谓的Unclean Leader选举，是指在ISR列表为空的情况下，Kafka选择一个非ISR副本作为新的Leader,存在丢失数据的风险; 社区于2.4.0.0版本正式支持在AdminClient端为给定分区选举Leader。目前的设计是，如果Leader选举是由AdminClient端触发的，那就默认开启Unclean Leader选举。
 
   def reassignPartitionLeaderElection(reassignment: Seq[Int], isr: Seq[Int], liveReplicas: Set[Int]): Option[Int] = {
     reassignment.find(id => liveReplicas.contains(id) && isr.contains(id))
@@ -538,12 +538,12 @@ object PartitionLeaderElectionAlgorithms {
     assignment.find(id => liveReplicas.contains(id) && isr.contains(id) && !shuttingDownBrokers.contains(id))
   }
 }
-// 分区leader选举策略
+// 分区Leader选举策略接口
 sealed trait PartitionLeaderElectionStrategy
-final case class OfflinePartitionLeaderElectionStrategy(allowUnclean: Boolean) extends PartitionLeaderElectionStrategy
-final case object ReassignPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
-final case object PreferredReplicaPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
-final case object ControlledShutdownPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy
+final case class OfflinePartitionLeaderElectionStrategy(allowUnclean: Boolean) extends PartitionLeaderElectionStrategy // 离线分区Leader选举策略; 因为Leader副本下线而引发的分区Leader选举。
+final case object ReassignPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy // 分区副本重分配Leader选举策略; 因为执行分区副本重分配操作而引发的分区Leader选举。
+final case object PreferredReplicaPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy // 分区Preferred副本Leader选举策略; 因为执行Preferred副本Leader选举而引发的分区Leader选举。
+final case object ControlledShutdownPartitionLeaderElectionStrategy extends PartitionLeaderElectionStrategy // Broker Controlled关闭时Leader选举策略; 因为正常关闭Broker而引发的分区Leader选举。
 
 sealed trait PartitionState { // 分区状态
   def state: Byte
